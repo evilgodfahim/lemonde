@@ -2,36 +2,31 @@ name: Update RSS Feed
 
 on:
   schedule:
-    - cron: "0 * * * *"  # Runs every hour
-  workflow_dispatch:
+    - cron: "0 * * * *"  # every hour
+  workflow_dispatch:      # allow manual trigger
 
 jobs:
   update-rss:
     runs-on: ubuntu-latest
     steps:
-      # 1️⃣ Checkout the repo
       - name: Checkout repo
         uses: actions/checkout@v3
 
-      # 2️⃣ Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.x"
 
-      # 3️⃣ Install dependencies
       - name: Install dependencies
-        run: pip install feedparser
+        run: pip install feedparser requests beautifulsoup4
 
-      # 4️⃣ Run the RSS script
-      - name: Run RSS script
+      - name: Run script
         run: python combine_rss.py
 
-      # 5️⃣ Commit and push changes
       - name: Commit and push combined.xml
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
           git add combined.xml
-          git commit -m "Update combined RSS feed" || echo "Nothing to commit"
+          git commit -m "Update combined RSS feed" || echo "No changes"
           git push
