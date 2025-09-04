@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # combine_rss.py
-# Combines multiple Economist RSS feeds, uses archive.is/o/nuunc/<original-url> as link,
-# fetches full text from that archive URL, keeps newest 20 items, writes combined.xml.
+# Combine multiple Economist RSS feeds with archive.is links and full text from archive snapshots
 
 import feedparser
 import requests
@@ -28,16 +27,15 @@ RSS_URLS = [
 ARCHIVE_PREFIX = "https://archive.is/o/nuunc/"   # your required prefix
 OUTPUT_FILE = "combined.xml"
 MAX_ITEMS = 20
-MAX_WORKERS = 6       # parallel fetchers for archive pages
-RETRY_COUNT = 2       # retry archive fetch attempts
-REQUEST_TIMEOUT = 30  # seconds per request (keeps Actions from blocking forever)
+MAX_WORKERS = 6
+RETRY_COUNT = 2
+REQUEST_TIMEOUT = 30
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; CombinedRSS/1.0; +https://github.com/)"
 }
 
 # === helpers ===
 def parse_entry_datetime(entry):
-    """Return a timezone-aware datetime for sorting."""
     if hasattr(entry, "published_parsed") and entry.published_parsed:
         ts = time.mktime(entry.published_parsed)
         return datetime.fromtimestamp(ts, tz=timezone.utc)
@@ -47,7 +45,6 @@ def parse_entry_datetime(entry):
     return datetime.now(tz=timezone.utc)
 
 def format_rfc2822(dt):
-    """Return RFC-2822 formatted date string for pubDate."""
     try:
         return email.utils.format_datetime(dt)
     except Exception:
@@ -55,61 +52,38 @@ def format_rfc2822(dt):
 
 def fetch_archive_full_html(archive_url):
     """
-    Fetch the archive URL and attempt to extract the main content.
-    Retries on transient errors.
+    Follow the archive.is redirect (o/nuunc) to the actual snapshot,
+    then fetch and extract the main content.
     """
     last_exc = None
     for attempt in range(RETRY_COUNT):
         try:
-            r = requests.get(archive_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+            # follow redirects to reach snapshot
+            r = requests.get(archive_url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
             r.raise_for_status()
+
             soup = BeautifulSoup(r.text, "html.parser")
 
-            # Try to find a main <article> first
+            # main <article> first
             article = soup.find("article")
             if article and article.get_text(strip=True):
                 return str(article)
 
-            # Some archive pages embed the snapshot inside an iframe or a div.
-            # Try some fallbacks:
-            # 1) iframe
-            iframe = soup.find("iframe")
-            if iframe and iframe.has_attr("src"):
-                # attempt to fetch iframe src (may be relative)
-                iframe_src = iframe["src"]
-                if iframe_src.startswith("//"):
-                    iframe_src = "https:" + iframe_src
-                elif iframe_src.startswith("/"):
-                    # build full url from archive_url
-                    from urllib.parse import urljoin
-                    iframe_src = urljoin(archive_url, iframe_src)
-                try:
-                    r2 = requests.get(iframe_src, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-                    r2.raise_for_status()
-                    soup2 = BeautifulSoup(r2.text, "html.parser")
-                    a2 = soup2.find("article") or soup2.find("div", {"id": "content"}) or soup2.find("body")
-                    if a2:
-                        return str(a2)
-                except Exception:
-                    pass
-
-            # 2) div that looks like a snapshot container
-            possible = soup.find(lambda tag: tag.name == "div" and tag.get("id") and "snapshot" in tag.get("id").lower())
-            if possible and possible.get_text(strip=True):
+            # fallback divs or body
+            possible = soup.find("div", id=lambda x: x and "content" in x.lower()) or soup.find("body")
+            if possible:
                 return str(possible)
 
-            # 3) fallback to body
-            body = soup.find("body")
-            if body:
-                return str(body)
-
-            # final fallback: raw HTML
             return r.text
         except Exception as e:
             last_exc = e
-            time.sleep(2)  # short wait before retry
-    # if all retries failed:
+            time.sleep(2)
     return f"<!-- Failed to fetch archive content ({archive_url}): {last_exc} -->Full text not available."
+
+def text_node(doc, name, text):
+    el = doc.createElement(name)
+    el.appendChild(doc.createTextNode(text))
+    return el
 
 # === collect entries from feeds ===
 all_entries = []
@@ -132,26 +106,22 @@ for feed_url in RSS_URLS:
             "published_dt": dt,
         })
 
-# sort by published date descending and keep newest MAX_ITEMS
+# newest 20 items
 all_entries.sort(key=lambda x: x["published_dt"], reverse=True)
 selected = all_entries[:MAX_ITEMS]
 
-# === fetch archive pages in parallel ===
+# fetch full HTML in parallel
 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-    future_map = {}
-    for item in selected:
-        future = ex.submit(fetch_archive_full_html, item["archive_link"])
-        future_map[future] = item
-
+    future_map = {ex.submit(fetch_archive_full_html, it["archive_link"]): it for it in selected}
     for future in as_completed(future_map):
-        item = future_map[future]
+        it = future_map[future]
         try:
             full_html = future.result()
         except Exception as e:
             full_html = f"<!-- fetch error: {e} -->Full text not available."
-        item["full_html"] = full_html
+        it["full_html"] = full_html
 
-# === build RSS using minidom so we can include CDATA for full HTML ===
+# === build RSS feed ===
 doc = Document()
 rss = doc.createElement("rss")
 rss.setAttribute("version", "2.0")
@@ -160,27 +130,19 @@ doc.appendChild(rss)
 
 channel = doc.createElement("channel")
 rss.appendChild(channel)
-
-def text_node(name, text):
-    el = doc.createElement(name)
-    el.appendChild(doc.createTextNode(text))
-    return el
-
-channel.appendChild(text_node("title", "Combined Economist RSS (archive.is links, newest 20)"))
-channel.appendChild(text_node("link", "https://github.com/"))
-channel.appendChild(text_node("description", "Combined feed — links point to archive.is/o/nuunc/..., full text fetched from archive pages"))
+channel.appendChild(text_node(doc, "title", "Combined Economist RSS (archive.is links, newest 20)"))
+channel.appendChild(text_node(doc, "link", "https://github.com/"))
+channel.appendChild(text_node(doc, "description", "Combined feed — links point to archive.is/o/nuunc/, full text from archive snapshots"))
 
 for it in selected:
     item_el = doc.createElement("item")
     channel.appendChild(item_el)
 
-    item_el.appendChild(text_node("title", it.get("title", "Untitled")))
-    # link must be archive prefix + original link (as you requested)
-    item_el.appendChild(text_node("link", it["archive_link"]))
-    item_el.appendChild(text_node("guid", it["orig_link"]))
-    item_el.appendChild(text_node("description", it.get("summary", "")))
-    pubdate = format_rfc2822(it["published_dt"])
-    item_el.appendChild(text_node("pubDate", pubdate))
+    item_el.appendChild(text_node(doc, "title", it.get("title", "Untitled")))
+    item_el.appendChild(text_node(doc, "link", it["archive_link"]))
+    item_el.appendChild(text_node(doc, "guid", it["orig_link"]))
+    item_el.appendChild(text_node(doc, "description", it.get("summary", "")))
+    item_el.appendChild(text_node(doc, "pubDate", format_rfc2822(it["published_dt"])))
 
     content_el = doc.createElement("content:encoded")
     cdata = doc.createCDATASection(it.get("full_html", "Full text not available."))
@@ -188,8 +150,7 @@ for it in selected:
     item_el.appendChild(content_el)
 
 # write to file
-xml_bytes = doc.toxml(encoding="utf-8")
 with open(OUTPUT_FILE, "wb") as f:
-    f.write(xml_bytes)
+    f.write(doc.toxml(encoding="utf-8"))
 
-print(f"Done — {len(selected)} items written to {OUTPUT_FILE}")
+print(f"✅ combined.xml generated with {len(selected)} newest items (archive.is links + full text).")
