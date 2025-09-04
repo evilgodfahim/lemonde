@@ -1,18 +1,9 @@
-#!/usr/bin/env python3
-# combine_rss.py
-# Combine multiple Economist RSS feeds with archive.is links and full text from archive snapshots
-
 import feedparser
-import requests
-from bs4 import BeautifulSoup
-from xml.dom.minidom import Document
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
-import time
-import email.utils
+import xml.etree.ElementTree as ET
+from datetime import datetime
 
-# === Configuration ===
-RSS_URLS = [
+# RSS feed URLs
+rss_feeds = [
     "https://www.economist.com/briefing/rss.xml",
     "https://www.economist.com/the-economist-explains/rss.xml",
     "https://www.economist.com/leaders/rss.xml",
@@ -21,81 +12,50 @@ RSS_URLS = [
     "https://www.economist.com/international/rss.xml",
     "https://www.economist.com/united-states/rss.xml",
     "https://www.economist.com/finance-and-economics/rss.xml",
-    "https://www.economist.com/the-world-this-week/rss.xml",
+    "https://www.economist.com/the-world-this-week/rss.xml"
 ]
 
-ARCHIVE_PREFIX = "https://archive.is/o/nuunc/"   # your required prefix
-OUTPUT_FILE = "combined.xml"
-MAX_ITEMS = 20
-MAX_WORKERS = 6
-RETRY_COUNT = 2
-REQUEST_TIMEOUT = 30
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; CombinedRSS/1.0; +https://github.com/)"
-}
+ARCHIVE_PREFIX = "https://archive.is/o/nuunc/"
 
-# === helpers ===
-def parse_entry_datetime(entry):
-    if hasattr(entry, "published_parsed") and entry.published_parsed:
-        ts = time.mktime(entry.published_parsed)
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
-    if hasattr(entry, "updated_parsed") and entry.updated_parsed:
-        ts = time.mktime(entry.updated_parsed)
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
-    return datetime.now(tz=timezone.utc)
-
-def format_rfc2822(dt):
-    try:
-        return email.utils.format_datetime(dt)
-    except Exception:
-        return email.utils.formatdate(dt.timestamp(), usegmt=True)
-
-def fetch_archive_full_html(archive_url):
-    """
-    Follow the archive.is redirect (o/nuunc) to the actual snapshot,
-    then fetch and extract the main content.
-    """
-    last_exc = None
-    for attempt in range(RETRY_COUNT):
-        try:
-            # follow redirects to reach snapshot
-            r = requests.get(archive_url, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
-            r.raise_for_status()
-
-            soup = BeautifulSoup(r.text, "html.parser")
-
-            # main <article> first
-            article = soup.find("article")
-            if article and article.get_text(strip=True):
-                return str(article)
-
-            # fallback divs or body
-            possible = soup.find("div", id=lambda x: x and "content" in x.lower()) or soup.find("body")
-            if possible:
-                return str(possible)
-
-            return r.text
-        except Exception as e:
-            last_exc = e
-            time.sleep(2)
-    return f"<!-- Failed to fetch archive content ({archive_url}): {last_exc} -->Full text not available."
-
-def text_node(doc, name, text):
-    el = doc.createElement(name)
-    el.appendChild(doc.createTextNode(text))
-    return el
-
-# === collect entries from feeds ===
-all_entries = []
-for feed_url in RSS_URLS:
-    try:
+def fetch_items(feed_urls):
+    all_items = []
+    for feed_url in feed_urls:
         feed = feedparser.parse(feed_url)
-    except Exception as e:
-        print(f"Failed to parse feed {feed_url}: {e}")
-        continue
-    for entry in feed.entries:
-        link = getattr(entry, "link", None)
-        if not link:
+        for entry in feed.entries:
+            if not hasattr(entry, "link"):
+                continue
+            original_link = entry.link
+            archive_link = ARCHIVE_PREFIX + original_link
+            all_items.append({
+                "title": entry.title,
+                "link": archive_link,
+                "description": entry.get("description", ""),
+                "pubDate": entry.get("published", datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0000"))
+            })
+    return all_items
+
+def create_rss(items):
+    rss = ET.Element("rss", version="2.0")
+    channel = ET.SubElement(rss, "channel")
+    ET.SubElement(channel, "title").text = "Combined Economist RSS Feed"
+    ET.SubElement(channel, "link").text = "https://yourusername.github.io/combined.xml"
+    ET.SubElement(channel, "description").text = "Combined feed of multiple Economist RSS sources with archive.is/o/nuunc links"
+    
+    for item in items:
+        i = ET.SubElement(channel, "item")
+        ET.SubElement(i, "title").text = item["title"]
+        ET.SubElement(i, "link").text = item["link"]
+        ET.SubElement(i, "description").text = item["description"]
+        ET.SubElement(i, "pubDate").text = item["pubDate"]
+    
+    return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
+
+if __name__ == "__main__":
+    items = fetch_items(rss_feeds)
+    rss_xml = create_rss(items)
+    with open("combined.xml", "wb") as f:
+        f.write(rss_xml)
+    print("Combined RSS feed created successfully.")
             continue
         dt = parse_entry_datetime(entry)
         all_entries.append({
