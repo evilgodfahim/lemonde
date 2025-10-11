@@ -12,7 +12,13 @@ rss_feeds = [
     "https://www.economist.com/international/rss.xml",
     "https://www.economist.com/united-states/rss.xml",
     "https://www.economist.com/finance-and-economics/rss.xml",
-    "https://www.economist.com/the-world-this-week/rss.xml"
+    "https://www.economist.com/the-world-this-week/rss.xml",
+    "https://www.economist.com/science-and-technology/rss.xml",
+    "https://www.economist.com/europe/rss.xml",
+    "https://www.economist.com/business/rss.xml",
+    "https://www.economist.com/graphic-detail/rss.xml",
+    "https://www.economist.com/rss/middle_east_and_africa_rss.xml",
+    "https://www.economist.com/the-americas/rss.xml"
 ]
 
 ARCHIVE_PREFIX = "https://archive.is/o/nuunc/"
